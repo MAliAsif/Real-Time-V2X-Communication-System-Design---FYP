@@ -1,4 +1,4 @@
-# 🚗 Real-Time V2X Communication System
+# 🚗 Real-Time V2X Communication System Design
 
 A final-year capstone project focused on designing and developing a **Real-Time Vehicle-to-Everything (V2X) Communication System** using **LoRa** protocol, enabling seamless vehicle-to-vehicle (V2V) and vehicle-to-infrastructure (V2I) communication without the need for cellular or Wi-Fi infrastructure.
 
