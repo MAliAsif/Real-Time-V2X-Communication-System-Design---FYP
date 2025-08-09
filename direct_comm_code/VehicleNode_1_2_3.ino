@@ -1,10 +1,28 @@
 #include <SPI.h>
 #include <LoRa.h>
+#include <TinyGPS++.h>  
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
+#include <HardwareSerial.h>
+
 
 // Define pins
 #define SS 5
 #define RST 14
 #define DIO0 2
+
+#define GPSTX 17 // TX output from ESP32 - RX input on NEO-6M
+#define GPSRX 16 // RX input on ESP32 - TX output on NEO-6M
+#define GPSBAUD 9600 // Baud rate for NEO-6M GPS module
+
+TinyGPSPlus gps; // TinyGPS++ instance
+HardwareSerial gpsSerial(2); // UART2 for GPS
+Adafruit_MPU6050 mpu;
+String sensorData = "";
+
+
+
 
 // Timing constants
 const unsigned long SEND_INTERVAL = 10000;     // Send every 10 seconds
@@ -28,11 +46,11 @@ struct NodeInfo {
 };
 
 // Array to store nodes
-NodeInfo nodes[3];  // 
+NodeInfo nodes[4];  // Changed to 3 nodes
 unsigned long lastPacketSentTime = 0;  // Store the time when we last sent a packet
 
 void setup() {
-  Serial.begin(115200);  // baud rate = 115200
+  Serial.begin(115200);
   while (!Serial);
   
   Serial.println("LoRa Transceiver Node");
@@ -51,7 +69,7 @@ void setup() {
   LoRa.enableCrc();
   
   // Initialize nodes
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 4; i++) {
     nodes[i].dataReceived = false;
     nodes[i].packetCount = 0;
     nodes[i].avgRSSI = 0;
@@ -59,11 +77,30 @@ void setup() {
     nodes[i].distance = 0;
   }
   
+
   // Set the name for this specific node (modify as needed)
+
   nodes[0].name = "NODE 2";
   
   Serial.println("\nLoRa Initialized Successfully");
   Serial.println("Listening for packets...");
+
+// Initialize GPS
+  gpsSerial.begin(GPSBAUD, SERIAL_8N1, GPSRX, GPSTX);
+
+    // Initialize MPU6050
+    if (!mpu.begin()) {
+        Serial.println("❌ MPU6050 Initialization Failed!");
+        while (1);
+    }
+
+    // Configure MPU6050 settings
+    mpu.setAccelerometerRange(MPU6050_RANGE_16_G);
+    mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    Serial.println("✅ GPS & MPU6050 Initialized Successfully!");
+
+
 }
 
 // New distance calculation using RSSI path loss model
@@ -85,7 +122,7 @@ String determineNearestNode() {
   String result = "No nearby nodes";
   
   // Distance comparison here for i<3 times b/w nodes[i] 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 4; i++) {
     // Skip checking the current node
     if (i == 0) continue;
     
@@ -95,7 +132,24 @@ String determineNearestNode() {
     }
   }
   
+// If a node is found within 2 meters, capture and send sensor data
+  if (nearestIndex != -1 && minDistance < 2.0) {
+    captureSensorData(nodes[nearestIndex].name);
+  }
 
+  // Fallback to raw RSSI if distance calculation fails
+  if (nearestIndex == -1) {
+    int maxRSSI = -200;  // Initialize to very low RSSI
+    for (int i = 0; i < 4; i++) {
+      // Skip checking the current node
+      if (i == 0) continue;
+      
+      if (nodes[i].dataReceived && nodes[i].rssi > maxRSSI) {
+        maxRSSI = nodes[i].rssi;
+        nearestIndex = i;
+      }
+    }
+  }
   
   if (nearestIndex != -1) {
     result = nodes[nearestIndex].name;
@@ -114,7 +168,7 @@ void updateNodeInfo(String nodeName, String data, int rssi) {
   bool nodeUpdated = false;
   
   // First try to update existing node
-  for (int i = 1; i < 3; i++) {  // Start from index 1 to skip the current node
+  for (int i = 1; i < 4; i++) {  // Start from index 1 to skip the current node
     
     //  1 node k lye 1 dfa hi run ho gi below if statement
 //  nodes[i].name == nodeName  this will ensure k jo nodename pass hua, sirf usi ki info update ho. 
@@ -157,7 +211,7 @@ void displayNodeStatus() {
   
   Serial.println("\n Data recieved from vehicles: " );
 
-  for (int i = 1; i < 3; i++) {
+  for (int i = 1; i < 4; i++) {
     if (nodes[i].dataReceived) {
      // Serial.println("\nNode " + String(i + 1) + ": " + nodes[i].name);
       Serial.println("\n From: \"" + nodes[i].name + "\"");
@@ -247,7 +301,6 @@ void receivePacket(unsigned long duration) {
       }
 
 
-
       // Ignore packets from the current node
       if (nodeName != nodes[0].name) {
         updateNodeInfo(nodeName, receivedText, rssi);
@@ -272,6 +325,56 @@ void receivePacket(unsigned long duration) {
   // Always display node status, even if no packets received
   displayNodeStatus();
 }
+
+
+void captureSensorData(String nearestNode){
+
+      // Read GPS Data
+ unsigned long startTimegps = millis();
+while (gpsSerial.available() > 0) {
+    char gpsData = gpsSerial.read();
+    gps.encode(gpsData);
+    
+    // Exit the loop if it runs for too long (e.g., 3 seconds)
+    if (millis() - startTimegps > 3000) {
+        Serial.println("⚠️ GPS Timeout! No valid data received.");
+        break;
+    }
+}
+
+    // Fetch Accelerometer Data
+    sensors_event_t accel, gyro, temp;
+    mpu.getEvent(&accel, &gyro, &temp);
+
+  // Check if valid GPS data is available
+  if (gps.location.isValid()) {
+sensorData = "GPS:Lat=" + String(gps.location.lat(), 6) + 
+             ",Lon=" + String(gps.location.lng(), 6);
+    Serial.println("✅ Valid GPS Data Captured: " + sensorData);
+  } else {
+    sensorData = "Dummy Sensor Data";
+    Serial.println("⚠️ No Valid GPS Data, Using Dummy Data!");
+  }
+
+// Append Acceleration Data
+    sensorData += "|Accel:X=" + String(accel.acceleration.x, 2) + 
+                  ",Y=" + String(accel.acceleration.y, 2) + 
+                  ",Z=" + String(accel.acceleration.z, 2);
+
+  // Construct Packet DATA:Route:Source:Destination:Payload
+
+  String dataPacket = "DATA:SOURCE:NODE 2:DESTINATION:"  + nearestNode + ":PAYLOAD:" + sensorData;
+
+  LoRa.beginPacket();
+  LoRa.print(dataPacket);
+  LoRa.endPacket();
+
+  Serial.println("📡 Data Packet Sent: " + dataPacket);
+
+}
+
+
+
 
 // Iterations untill currentTime = 10 sec( 10 sec since last reset ), this loop will execyte in milliseconds.
 // After that, it will take approx 10 seconds for each iteration.
@@ -300,6 +403,4 @@ void loop() {
   delay(10); 
 
 }
-
-
 
